@@ -54,13 +54,20 @@ def timed(func, timeout, args=(), kwargs={}):
             Thread.__init__(self)
             self.daemon = True
             self.result = None
+            self.error = None
         def run(self):
-            self.result = func(*args, **kwargs)
+            try:
+                self.result = func(*args, **kwargs)
+            except Exception as e:
+                e._message = traceback.format_exc(limit=2)
+                self.error = e
     submission = ReturningThread()
     submission.start()
     submission.join(timeout)
     if submission.is_alive():
         raise TimeoutError("Evaluation timed out!")
+    if submission.error is not None:
+        raise submission.error
     return submission.result
 
 def check_func(func, tests,
@@ -76,13 +83,13 @@ def check_func(func, tests,
     for input, output, *desc in tests:
         try:
             val = test_eval(func, input)
-        except:
+        except Exception as e:
             fail_msg = "Function {0} failed".format(func.__name__)
             if desc:
                 print(fail_msg, desc[0])
             else:
                 print(fail_msg, "with input", in_print(input))
-            traceback.print_exception(*sys.exc_info(), limit=2)
+            print(e._message)
             code += 1
             continue
         if not comp(val, output):
@@ -109,7 +116,6 @@ def check_doctest(func_name, module, run=True):
         return True
     return False
 
-
 def underline(s):
     """Print string S, double underlined in ASCII."""
     print(s)
@@ -119,11 +125,15 @@ def check_for_updates(index, filenames, version):
     print('You are running version', version, 'of the autograder')
     try:
         remotes = {}
-        for file in filenames:
-            remotes[file] = urllib.request.urlopen(
-                    os.path.join(index, file)).read().decode('utf-8')
-    except urllib.error.URLError:
+        for filename in filenames:
+            path = os.path.join(index, filename)
+            data = timed(urllib.request.urlopen, 1, args=(path,))
+            remotes[filename] = data.read().decode('utf-8')
+    except (urllib.error.URLError, urllib.error.HTTPError):
         print("Couldn't check remote autograder")
+        return
+    except TimeoutError:
+        print("Checking for updates timed out.")
         return
     remote_version = re.search("__version__ = '(.*)'",
                                remotes[filenames[0]])
@@ -152,7 +162,7 @@ def run_tests(name, remote_index, autograder_files, version, **kwargs):
                         help='Prints autograder version and exits')
     args = parser.parse_args()
 
-    #check_for_updates(remote_index, autograder_files, version)
+    check_for_updates(remote_index, autograder_files, version)
     if args.version:
         exit(0)
     elif args.question and 0 < args.question <= len(TESTS):
